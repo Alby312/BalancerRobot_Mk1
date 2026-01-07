@@ -1,0 +1,65 @@
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+#include <utility/imumaths.h>
+
+// Usa l'indirizzo corretto (0x28 o 0x29)
+Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x29);
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial) delay(10); // Attendi la seriale
+
+  // 1. I2C VELOCE: Fondamentale per non avere colli di bottiglia nel test
+  Wire.setSCL(1); // I tuoi pin
+  Wire.setSDA(0);
+  Wire.setClock(400000); // 400kHz Fast Mode
+
+  // 2. Inizializzazione
+  // Nota: Sto usando OPERATION_MODE_IMUPLUS (Simile a NDOF ma senza magnetometro, spesso più veloce)
+  // Puoi provare anche OPERATION_MODE_NDOF o OPERATION_MODE_AMG (solo raw)
+  if (!bno.begin(OPERATION_MODE_AMG)) {
+    Serial.print("Ooops, no BNO055 detected");
+    while (1);
+  }
+  
+  bno.setExtCrystalUse(true);
+  Serial.println("--- BNO055 FREQUENCY TEST ---");
+  delay(1000);
+}
+
+// Variabili per il conteggio
+unsigned long lastPrintTime = 0;
+long readAttempts = 0;   // Quante volte chiediamo il dato via I2C
+long newSamples = 0;     // Quanti dati sono effettivamente nuovi
+float lastGyroY = 0.0;
+
+void loop() {
+  // Leggiamo il giroscopio
+  sensors_event_t event;
+  bno.getEvent(&event, Adafruit_BNO055::VECTOR_GYROSCOPE);
+
+  float currentGyroY = event.gyro.y;
+  readAttempts++;
+
+  // Verifica se il dato è cambiato
+  // Usiamo una tolleranza minuscola per evitare rumore float, 
+  // ma sufficientemente piccola per beccare ogni aggiornamento reale.
+  if (abs(currentGyroY - lastGyroY) > 0.00001) {
+    newSamples++;
+    lastGyroY = currentGyroY;
+  }
+
+  // Ogni 1000ms stampiamo il report
+  if (millis() - lastPrintTime >= 1000) {
+    Serial.print("Loop Rate (Reads/sec): ");
+    Serial.print(readAttempts);
+    Serial.print("\t -> REAL GYRO Hz (New Samples): ");
+    Serial.println(newSamples);
+
+    // Reset contatori
+    readAttempts = 0;
+    newSamples = 0;
+    lastPrintTime = millis();
+  }
+}

@@ -1,0 +1,47 @@
+#include <Arduino.h>
+#include <SPI.h>
+#include <SimpleFOC.h>
+#include "encoders/mt6701/MagneticSensorMT6701SSI.h"
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+#include <Adafruit_NeoPixel.h>
+#include <utility/imumaths.h>
+#include <AlfredoCRSF.h>
+#include <AdvancedPID.h>
+
+#define RX_INPUT 15
+#define TX_INPUT 26
+
+// Set up a new Serial object
+SerialPIO crsfSerial(TX_INPUT, RX_INPUT);
+AlfredoCRSF crsf;
+
+void setup()
+{
+  Serial.begin(115200);
+  Serial.println("COM Serial initialized");
+  
+  crsfSerial.begin(CRSF_BAUDRATE, SERIAL_8N1);
+  if (!crsfSerial) while (1) Serial.println("Invalid crsfSerial configuration");
+
+  crsf.begin(crsfSerial);
+}
+
+
+//Use crsf.getChannel(x) to get us channel values (1-16).
+void printChannels()
+{
+  for (int ChannelNum = 1; ChannelNum <= 16; ChannelNum++)
+  {
+    Serial.print(crsf.getChannel(ChannelNum));
+    Serial.print(", ");
+  }
+  Serial.println(" ");
+}
+
+void loop()
+{
+    // Must call crsf.update() in loop() to process data
+    crsf.update();
+    printChannels();
+}

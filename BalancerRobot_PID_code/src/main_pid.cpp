@@ -20,8 +20,8 @@
 #define SENSOR1_CLK 14
 #define SENSOR1_RX 12
 
-#define RX_INPUT 15
-#define TX_INPUT 26
+#define TX_INPUT 27
+#define RX_INPUT 26
 #define CH_TH 2
 #define CH_DIR 1
 
@@ -29,11 +29,17 @@
 #define SCL_PIN 1
 #define SDA_PIN 0
 
+#define TIMESTEP 2
+#define TIMESTEPRADIO 10
 #define PITCH_OFFSET 0
 #define ANGLEMAX 60 * DEG_TO_RAD
-#define MAX_SPEED 50
-#define MAX_ROTATION_SPEED 30
-#define V_DEADZONE 0.0005
+#define MAX_SPEED 1.0
+#define MAX_ROTATION_SPEED 5.0
+#define WHEEL_RADIUS 0.02365
+#define BATTERY_VOLTAGE 12.0
+#define WHEELBASE 0.13 // meters
+#define ACC 2
+#define SPEEDLIMIT 1.0 // m/s
 
 Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x29);
 
@@ -48,24 +54,27 @@ MagneticSensorMT6701SSI sensor2(SENSOR2_CS);
 BLDCDriver3PWM driver1 = BLDCDriver3PWM(IN1_1, IN2_1, IN3_1);
 BLDCDriver3PWM driver2 = BLDCDriver3PWM(IN1_2, IN2_2, IN3_2);
 
-AdvancedPID pidStab{0.42, 0.5, 0.035, 0.0};
-AdvancedPID pidVel{0.004, 0.004, 0.00001, 0.0};
-AdvancedPID pidYaw{0.02, 0.0005, 0.0, 0.0};
+AdvancedPID pidStab{0.40, 0.2, 0.030, 0.0};
+AdvancedPID pidVel{0.33, 0.3, 0.001, 0.2};
+AdvancedPID pidYaw{0.1, 0.01, 0.0, 0.0};
 
-LowPassFilter lpf_speed{0.02};
-LowPassFilter lpf_yaw{0.1};
+LowPassFilter lpf_speed{0.06};
+LowPassFilter lpf_yaw{0.05};
+LowPassFilter lpf_cmd1{0.1};
+LowPassFilter lpf_cmd2{0.1};
 
 SerialPIO elrsSerial(TX_INPUT, RX_INPUT);
 AlfredoCRSF elrs;
 
 volatile bool motors_ready = false;
-volatile double sh_target_voltage_1 = 0.0;
-volatile double sh_target_voltage_2 = 0.0;
-volatile double sh_velocity_1 = 0.0;
-volatile double sh_velocity_2 = 0.0;
+volatile float sh_target_current_1 = 0.0;
+volatile float sh_target_current_2 = 0.0;
+volatile float sh_velocity_1 = 0.0;
+volatile float sh_velocity_2 = 0.0;
 
 float mapFloat(float x, float in_min, float in_max, float out_min, float out_max);
 void mapChannels();
+float accelerationRamp(float actual, float target, float acc, float timestep);
 
 // SETUP CORE 1 MOTORS CONTROL
 void setup1()
@@ -78,8 +87,11 @@ void setup1()
   motor1.linkSensor(&sensor1);
   motor2.linkSensor(&sensor2);
 
-  driver1.voltage_power_supply = 12.5;
-  driver2.voltage_power_supply = 12.5;
+  driver1.voltage_power_supply = BATTERY_VOLTAGE;
+  driver2.voltage_power_supply = BATTERY_VOLTAGE;
+
+  driver1.pwm_frequency = 50000;
+  driver2.pwm_frequency = 50000;
   // link driver
   motor1.linkDriver(&driver1);
   if (!driver1.init())
@@ -95,8 +107,8 @@ void setup1()
   }
 
   // aligning voltage [V]
-  motor1.voltage_sensor_align = 1;
-  motor2.voltage_sensor_align = 1;
+  motor1.voltage_sensor_align = 5;
+  motor2.voltage_sensor_align = 5;
 
   motor1.torque_controller = TorqueControlType::voltage;
   motor2.torque_controller = TorqueControlType::voltage;
@@ -112,10 +124,10 @@ void setup1()
     return;
   }
 
-  // motor1.zero_electric_angle = 4.63;        // rad
-  // motor1.sensor_direction = Direction::CCW; // CW or CCW
-  // motor2.zero_electric_angle = 7.69;        // rad
-  // motor2.sensor_direction = Direction::CW;  // CW or CCW
+  motor1.zero_electric_angle = 4.00;        // rad
+  motor1.sensor_direction = Direction::CCW; // CW or CCW
+  motor2.zero_electric_angle = 2.14;        // rad
+  motor2.sensor_direction = Direction::CW;  // CW or CCW
 
   motor1.initFOC();
   motor2.initFOC();
@@ -129,8 +141,8 @@ void loop1()
   motor1.loopFOC();
   motor2.loopFOC();
 
-  motor1.move(sh_target_voltage_1);
-  motor2.move(sh_target_voltage_2);
+  motor1.move(sh_target_current_1);
+  motor2.move(sh_target_current_2);
 
   sh_velocity_1 = motor1.shaft_velocity;
   sh_velocity_2 = motor2.shaft_velocity;
@@ -141,23 +153,22 @@ void setup()
 {
   Serial.begin(115200);
 
-  pidStab.setOutputLimits(-2, 2);
-  pidVel.setOutputLimits(-0.2, 0.2);
-  pidYaw.setOutputLimits(-2, 2);
+  pidStab.setOutputLimits(-0.5, 0.5);
+  pidVel.setOutputLimits(-0.3, 0.3);
+  pidYaw.setOutputLimits(-0.1, 0.1);
 
-  pidVel.setDerivativeFilter(0.7);
-  // pidStab.setIntegralZone(0.3);
+  pidVel.setDerivativeFilter(0.5);
 
   led.begin();
   led.setBrightness(100);
   led.setPixelColor(0, led.Color(0, 0, 150));
   led.show();
 
-  // elrsSerial.begin(CRSF_BAUDRATE, SERIAL_8N1);
-  // if (!elrsSerial)
-  //   while (1)
-  //     Serial.println("Invalid crsfSerial configuration");
-  // elrs.begin(elrsSerial);
+  elrsSerial.begin(CRSF_BAUDRATE, SERIAL_8N1);
+  if (!elrsSerial)
+    while (1)
+      Serial.println("Invalid crsfSerial configuration");
+  elrs.begin(elrsSerial);
 
   Wire.setSCL(SCL_PIN);
   Wire.setSDA(SDA_PIN);
@@ -186,66 +197,87 @@ void setup()
 }
 
 unsigned long lastTimeLoop = 0;
+unsigned long lastTimeRadio = 0;
+unsigned long lastTimeSensor = 0;
 sensors_event_t absolute, gyro;
 float speedTarget = 0;
+float speedRamped = 0;
 float yawTarget = 0;
+float pitchAnchor = 0;
+float pitchSpeed = 0;
 
 // LOOP CORE 0 ROBOT CONTROL
 void loop()
 {
-  if (millis() > lastTimeLoop + 5)
+
+  if (millis() > lastTimeLoop + TIMESTEP)
   {
     // time update for cycle
     lastTimeLoop = millis();
-
     // update the radio commands
-    // elrs.update();
-    // mapChannels();
+    if (lastTimeLoop > lastTimeRadio + TIMESTEPRADIO)
+    {
+      elrs.update();
+      mapChannels();
+      lastTimeRadio = millis();
+    }
 
     // update the sensor status
     bno.getEvent(&absolute, Adafruit_BNO055::VECTOR_EULER);
     bno.getEvent(&gyro, Adafruit_BNO055::VECTOR_GYROSCOPE);
-    double pitch = ((absolute.orientation.y) - PITCH_OFFSET) * DEG_TO_RAD;
-    double pitch_speed = -gyro.gyro.y;
+    float pitchSensorNew = (float)(((absolute.orientation.y) - PITCH_OFFSET) * DEG_TO_RAD);
+    float pitchSpeedSensorNew = (float)gyro.gyro.y;
 
-    double calcVoltage = 0;
-    double calcVoltageDiff = 0;
-    double pitchTarget = 0;
+    if (abs(pitchSensorNew - pitchAnchor) > 0.0001f)
+    {
+      pitchAnchor = pitchSensorNew;
+      pitchSpeed = pitchSpeedSensorNew;
+      lastTimeSensor = millis();
+    }
+
+    unsigned dtSensor = (millis() - lastTimeSensor) / 1000.0f;
+    float pitch = pitchAnchor + pitchSpeed * dtSensor;
+
+    float calcCurrent = 0;
+    float calcCurrentDiff = 0;
+    float pitchTarget = 0;
 
     if (abs(pitch) < ANGLEMAX)
     {
+      speedRamped = accelerationRamp(speedRamped, speedTarget, ACC, TIMESTEP / 1000.0f);
+      // limit max wheel speed
+      float speedRotation = abs(yawTarget) * WHEELBASE / 2.0f;
+      float maxLinearSpeed = SPEEDLIMIT - speedRotation;
+      speedRamped = constrain(speedRamped, -maxLinearSpeed, maxLinearSpeed);
+
       // first PID
-      double linear_speed = lpf_speed((motor1.shaft_velocity + motor2.shaft_velocity) / 2);
-      pitchTarget = -pidVel.run(linear_speed, speedTarget);
+      float linearSpeed = lpf_speed((motor1.shaft_velocity + motor2.shaft_velocity) / 2) * WHEEL_RADIUS;
+      pitchTarget = -pidVel.run(linearSpeed, speedRamped);
       // pitchTarget = 0;
 
       // second PID
-      float gravity_ff = sin(-pitch) * 0.1;
-      calcVoltage = pidStab.run(pitch, pitchTarget, 0.0, gyro.gyro.y);
-      Serial.print(pitchTarget - pitch);
-      Serial.print(" ");
-      Serial.println(linear_speed);
-
-      calcVoltageDiff = lpf_yaw(pidYaw.run((motor1.shaft_velocity - motor2.shaft_velocity), yawTarget));
+      calcCurrent = pidStab.run(pitch, pitchTarget, 0.0, pitchSpeed);
+      calcCurrentDiff = lpf_yaw(pidYaw.run(((motor1.shaft_velocity - motor2.shaft_velocity) * WHEEL_RADIUS) / WHEELBASE, yawTarget));
     }
     else
     {
       // reset PIDs and motor speed if not up
-      sh_target_voltage_1 = 0;
-      sh_target_voltage_2 = 0;
+      sh_target_current_1 = 0;
+      sh_target_current_2 = 0;
       led.setPixelColor(0, led.Color(150, 150, 0));
       led.show();
       delay(2000);
       pidStab.reset();
       pidVel.reset();
       pidYaw.reset();
+      speedRamped = 0;
     }
 
     // update variable for core 1
-    sh_target_voltage_1 = calcVoltage + calcVoltageDiff;
-    sh_target_voltage_2 = calcVoltage - calcVoltageDiff;
+    sh_target_current_1 = calcCurrent + calcCurrentDiff;
+    sh_target_current_2 = calcCurrent - calcCurrentDiff;
 
-    if (abs(pitchTarget - pitch) < 0.02)
+    if (abs(pitch) < 0.2)
     {
       led.setPixelColor(0, led.Color(0, 150, 0));
       led.show();
@@ -267,16 +299,31 @@ void mapChannels()
 {
   if (elrs.isLinkUp())
   {
-    speedTarget = mapFloat(elrs.getChannel(CH_TH), 1000, 2000, MAX_SPEED, -MAX_SPEED);
-    yawTarget = mapFloat(elrs.getChannel(CH_DIR), 1000, 2000, MAX_ROTATION_SPEED, -MAX_ROTATION_SPEED);
-    if (abs(speedTarget) < 1)
+    speedTarget = lpf_cmd1(mapFloat(elrs.getChannel(CH_TH), 1000, 2000, MAX_SPEED, -MAX_SPEED));
+    yawTarget = lpf_cmd2(mapFloat(elrs.getChannel(CH_DIR), 1000, 2000, MAX_ROTATION_SPEED, -MAX_ROTATION_SPEED));
+    if (abs(speedTarget) < MAX_SPEED * 0.05)
       speedTarget = 0;
-    if (abs(yawTarget) < 1)
+    if (abs(yawTarget) < MAX_ROTATION_SPEED * 0.05)
       yawTarget = 0;
   }
   else
   {
     speedTarget = 0;
+    speedRamped = 0;
     yawTarget = 0;
   }
+}
+
+float accelerationRamp(float actual, float target, float acc, float timestep)
+{
+  float output;
+  float step = acc * timestep;
+  float diff = target - actual;
+
+  if (abs(diff) <= step)
+    return target;
+  else if (diff > 0)
+    return actual + step;
+  else
+    return actual - step;
 }
