@@ -45,8 +45,8 @@ Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x29);
 
 Adafruit_NeoPixel led(1, LED, NEO_GRB + NEO_KHZ800);
 
-BLDCMotor motor1 = BLDCMotor(7, 22.7, 100);
-BLDCMotor motor2 = BLDCMotor(7, 22.7, 100);
+BLDCMotor motor1 = BLDCMotor(7, 10, 100);
+BLDCMotor motor2 = BLDCMotor(7, 10, 100);
 
 MagneticSensorMT6701SSI sensor1(SENSOR1_CS);
 MagneticSensorMT6701SSI sensor2(SENSOR2_CS);
@@ -54,7 +54,7 @@ MagneticSensorMT6701SSI sensor2(SENSOR2_CS);
 BLDCDriver3PWM driver1 = BLDCDriver3PWM(IN1_1, IN2_1, IN3_1);
 BLDCDriver3PWM driver2 = BLDCDriver3PWM(IN1_2, IN2_2, IN3_2);
 
-AdvancedPID pidStab{0.40, 0.2, 0.030, 0.0};
+AdvancedPID pidStab{1, 0.5, 0.08, 0.0};
 AdvancedPID pidVel{0.33, 0.3, 0.001, 0.2};
 AdvancedPID pidYaw{0.1, 0.01, 0.0, 0.0};
 
